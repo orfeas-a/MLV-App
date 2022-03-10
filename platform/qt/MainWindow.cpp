@@ -20,6 +20,8 @@
 #include <QDir>
 #include <QSpacerItem>
 #include <QDate>
+#include <QStorageInfo>
+#include <QColorDialog>
 #include <unistd.h>
 #include <math.h>
 
@@ -49,6 +51,7 @@
 #include "BadPixelFileHandler.h"
 #include "FocusPixelMapManager.h"
 #include "StatusFpmDialog.h"
+#include "RenameDialog.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -1573,6 +1576,9 @@ void MainWindow::readSettings()
         ui->actionDarkThemeModern->setChecked( true );
         on_actionDarkThemeModern_triggered( true );
     }
+    ui->graphicsView->setBackgroundBrush( QBrush( QColor( set.value( "backgroundcolorR", 0 ).toUInt(),
+                                                          set.value( "backgroundcolorG", 0 ).toUInt(),
+                                                          set.value( "backgroundcolorB", 0 ).toUInt() ), Qt::SolidPattern ) );
 }
 
 //Save some settings to registry
@@ -1633,6 +1639,10 @@ void MainWindow::writeSettings()
     set.setValue( "betterResizerViewer", ui->actionBetterResizer->isChecked() );
     if( ui->actionDarkThemeStandard->isChecked() ) set.setValue( "themeId", 0 );
     else set.setValue( "themeId", 1 );
+    QColor backgroundColor = ui->graphicsView->backgroundBrush().color();
+    set.setValue( "backgroundcolorR", backgroundColor.red() );
+    set.setValue( "backgroundcolorG", backgroundColor.green() );
+    set.setValue( "backgroundcolorB", backgroundColor.blue() );
 }
 
 //Start Export via Pipe
@@ -2069,6 +2079,8 @@ void MainWindow::startExportPipe(QString fileName)
                 m_pStatusDialog->drawTimeFromToDoFrames( totalFrames - ( ( i - ( m_exportQueue.first()->cutIn() - 1 ) + 1 ) >> 1 ) );
                 qApp->processEvents();
 
+                //Check diskspace
+                checkDiskFull( fileName );
                 //Abort pressed? -> End the loop
                 if( m_exportAbortPressed ) break;
             }
@@ -2576,6 +2588,8 @@ void MainWindow::startExportPipe(QString fileName)
             }
             qApp->processEvents();
 
+            //Check diskspace
+            checkDiskFull( fileName );
             //Abort pressed? -> End the loop
             if( m_exportAbortPressed ) break;
         }
@@ -2723,6 +2737,13 @@ void MainWindow::startExportCdng(QString fileName)
     //Init DNG data struct
     dngObject_t * cinemaDng = initDngObject( m_pMlvObject, m_codecProfile - 6, getFramerate(), picAR);
 
+    //Render one single frame for raw correction init
+    uint32_t frameSize = getMlvWidth( m_pMlvObject ) * getMlvHeight( m_pMlvObject ) * 3;
+    uint16_t * imgBuffer;
+    imgBuffer = ( uint16_t* )malloc( frameSize * sizeof( uint16_t ) );
+    getMlvProcessedFrame16( m_pMlvObject, 0, imgBuffer, QThread::idealThreadCount() );
+    free( imgBuffer );
+
     //Output frames loop
     for( uint32_t frame = m_exportQueue.first()->cutIn() - 1; frame < m_exportQueue.first()->cutOut(); frame++ )
     {
@@ -2772,6 +2793,8 @@ void MainWindow::startExportCdng(QString fileName)
         m_pStatusDialog->drawTimeFromToDoFrames( totalFrames - frame + ( m_exportQueue.first()->cutIn() - 1 ) - 1 );
         qApp->processEvents();
 
+        //Check diskspace
+        checkDiskFull( fileName );
         //Abort pressed? -> End the loop
         if( m_exportAbortPressed ) break;
     }
@@ -3085,6 +3108,8 @@ void MainWindow::startExportAVFoundation(QString fileName)
         m_pStatusDialog->drawTimeFromToDoFrames( totalFrames - frame + ( m_exportQueue.first()->cutIn() - 1 ) - 1 );
         qApp->processEvents();
 
+        //Check diskspace
+        checkDiskFull( fileName );
         //Abort pressed? -> End the loop
         if( m_exportAbortPressed ) break;
     }
@@ -3734,6 +3759,10 @@ void MainWindow::readXmlElementsFromFile(QXmlStreamReader *Rxml, ReceiptSettings
             }
             Rxml->readNext();
         }
+        else if( Rxml->isStartElement() && Rxml->name() == "exrMode" )
+        {
+            receipt->setExrMode( (bool)Rxml->readElementText().toInt() );
+        }
         else if( Rxml->isStartElement() && Rxml->name() == "denoiserWindow" )
         {
             receipt->setDenoiserWindow( Rxml->readElementText().toInt() );
@@ -4065,6 +4094,7 @@ void MainWindow::writeXmlElementsToFile(QXmlStreamWriter *xmlWriter, ReceiptSett
     xmlWriter->writeTextElement( "gamut",                   QString( "%1" ).arg( receipt->gamut() ) );
     xmlWriter->writeTextElement( "gamma",                   QString( "%1" ).arg( receipt->gamma() ) );
     xmlWriter->writeTextElement( "allowCreativeAdjustments",QString( "%1" ).arg( receipt->allowCreativeAdjustments() ) );
+    xmlWriter->writeTextElement( "exrMode",                 QString( "%1" ).arg( receipt->exrMode() ) );
     xmlWriter->writeTextElement( "denoiserStrength",        QString( "%1" ).arg( receipt->denoiserStrength() ) );
     xmlWriter->writeTextElement( "denoiserWindow",          QString( "%1" ).arg( receipt->denoiserWindow() ) );
     xmlWriter->writeTextElement( "rbfDenoiserLuma",         QString( "%1" ).arg( receipt->rbfDenoiserLuma() ) );
@@ -4138,7 +4168,7 @@ void MainWindow::deleteSession()
 
     //Set Labels black
     ui->labelScope->setScope( NULL, 0, 0, false, false, ScopesLabel::None );
-    m_pGraphicsItem->setPixmap( QPixmap( ":/IMG/IMG/Histogram.png" ) );
+    m_pGraphicsItem->setPixmap( QPixmap( ":/IMG/IMG/TransDummy.png" ) );
     m_pScene->setSceneRect( 0, 0, 10, 10 );
 
     //Fake no audio track
@@ -5546,7 +5576,7 @@ void MainWindow::on_actionAbout_triggered()
                                    .arg( pic ) //1
                                    .arg( APPNAME ) //2
                                    .arg( VERSION ) //3
-                                   .arg( "by Ilia3101, bouncyball, Danne, dfort & masc." ) //4
+                                   .arg( "by Ilia3101, bouncyball, Danne, dfort, orfeas-a & masc." ) //4
                                    .arg( "https://github.com/ilia3101/MLV-App" ) //5
                                    .arg( "https://github.com/Jorgen-VikingGod" ) //6
                                    .arg( "http://www.doublejdesign.co.uk/" ) //7
@@ -7237,6 +7267,7 @@ void MainWindow::on_listViewSession_customContextMenuRequested(const QPoint &pos
             myMenu.addAction( ui->actionSelectAllClips );
             myMenu.addAction( QIcon( ":/RetinaIMG/RetinaIMG/Image-icon.png" ), "Show in Editor",  this, SLOT( rightClickShowFile() ) );
             myMenu.addAction( QIcon( ":/RetinaIMG/RetinaIMG/Delete-icon.png" ), "Delete Selected File from Session",  this, SLOT( deleteFileFromSession() ) );
+            myMenu.addAction( "Rename", this, SLOT( renameActiveClip() ) );
             markMenu.setTitle( "Mark Clip" );
             myMenu.addMenu( &markMenu );
             myMenu.addSeparator();
@@ -7282,6 +7313,7 @@ void MainWindow::on_tableViewSession_customContextMenuRequested(const QPoint &po
             myMenu.addAction( ui->actionSelectAllClips );
             myMenu.addAction( QIcon( ":/RetinaIMG/RetinaIMG/Image-icon.png" ), "Show in Editor",  this, SLOT( rightClickShowFile() ) );
             myMenu.addAction( QIcon( ":/RetinaIMG/RetinaIMG/Delete-icon.png" ), "Delete Selected File from Session",  this, SLOT( deleteFileFromSession() ) );
+            myMenu.addAction( "Rename", this, SLOT( renameActiveClip() ) );
             markMenu.setTitle( "Mark Clip" );
             myMenu.addMenu( &markMenu );
             myMenu.addSeparator();
@@ -7396,6 +7428,84 @@ void MainWindow::deleteFileFromSession( void )
     m_inClipDeleteProcess = false;
 }
 
+//Rename the selected clip
+void MainWindow::renameActiveClip( void )
+{
+    //Save slider receipt
+    setReceipt( ACTIVE_RECEIPT );
+
+    //If multiple selection is on, we do nothing. We just rename one selected clip
+    QModelIndexList list = selectedClipsList();
+    if( list.count() > 1 ) return;
+
+    int row = list.first().data( ROLE_REALINDEX ).toInt();
+
+    RenameDialog *rd = new RenameDialog( this, m_pModel->clip( row )->getName() );
+    if( !rd->exec() )
+    {
+        delete rd;
+        return;
+    }
+    QString newFileName = rd->clipName();
+    delete rd;
+
+    if( m_pModel->clip( row )->getName() == newFileName ) return;
+
+    QString fileName = GET_RECEIPT(row)->fileName();
+    QString newFilePath = QFileInfo( fileName ).path() + "/" + newFileName;
+
+    //Unload clip for Windows
+    freeMlvObject( m_pMlvObject );
+    m_pMlvObject = initMlvObject();
+
+    //MLV
+    bool ok = QFile( fileName ).rename( newFilePath );
+    //MAPP
+    QString mappName = fileName;
+    mappName.chop( 4 );
+    mappName.append( ".MAPP" );
+    QString newMappPath = newFilePath;
+    newMappPath.chop( 4 );
+    newMappPath.append( ".MAPP" );
+    if( QFile( mappName ).exists() )
+    {
+        ok = ok && QFile( mappName ).rename( newMappPath );
+    }
+    //M00..M99
+    mappName.chop( 1 );
+    newMappPath.chop( 1 );
+    for( int nr = 0; nr < 100; nr++ )
+    {
+        mappName.chop( 2 );
+        newMappPath.chop( 2 );
+        mappName.append( QString( "%1" ).arg( nr, 2, 10, QChar( '0' ) ) );
+        newMappPath.append( QString( "%1" ).arg( nr, 2, 10, QChar( '0' ) ) );
+        if( QFileInfo( mappName ).exists() )
+        {
+            ok = ok && QFile( mappName ).rename( newMappPath );
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    if( ok )
+    {
+        GET_RECEIPT(row)->setFileName( newFilePath );
+        m_pModel->clip( row )->setPathName( newFileName, newFilePath );
+    }
+    else
+    {
+        QMessageBox::critical( this, tr( "Renaming clip" ).arg( APPNAME ), tr( "Renaming clip failed!" ) );
+    }
+
+    //Open the clip again without rendering
+    openMlv( ACTIVE_CLIP->getPath() );
+    m_frameChanged = false;
+    setSliders( ACTIVE_RECEIPT, false );
+}
+
 //Shows the file, which is selected via contextmenu
 void MainWindow::rightClickShowFile( void )
 {
@@ -7422,6 +7532,7 @@ void MainWindow::pictureCustomContextMenuRequested(const QPoint &pos)
     myMenu.addSeparator();
     myMenu.addMenu( ui->menuDemosaicForPlayback );
     myMenu.addAction( ui->actionBetterResizer );
+    myMenu.addAction( ui->actionViewerBackgroundColor );
     myMenu.addSeparator();
     myMenu.addAction( ui->actionShowZebras );
     if( ui->actionFullscreen->isChecked() )
@@ -9669,13 +9780,17 @@ void MainWindow::on_toolButtonNextLut_clicked()
 
     // Move the iterator to the current lut file
     QString fileName = firstFileName;
-    while (fileName != ui->lineEditLutName->text()) fileName = lutFileIt.next();
+    while (fileName < ui->lineEditLutName->text() && lutFileIt.hasNext()) fileName = lutFileIt.next();
 
     // Move the iterator to the next lut file
     QString nextFileName;
-    if (lutFileIt.hasNext()) nextFileName = lutFileIt.next();
-    // If the current file is the last move back to the first file
-    else nextFileName = firstFileName;
+    if (fileName <= ui->lineEditLutName->text())
+    {
+        if (lutFileIt.hasNext()) nextFileName = lutFileIt.next();
+        // If the current file is the last move back to the first file
+        else nextFileName = firstFileName;
+    }
+    else nextFileName = fileName;
 
     if( QFileInfo( nextFileName ).exists() )
     {
@@ -9698,7 +9813,7 @@ void MainWindow::on_toolButtonPrevLut_clicked()
 
     // If the current file is the first move iterator to the last file
     QString previousFileName;
-    if (ui->lineEditLutName->text() == firstFileName)
+    if (ui->lineEditLutName->text() <= firstFileName)
     {
         while (lutFileIt.hasNext()) lutFileIt.next();
         previousFileName = lutFileIt.filePath();
@@ -9707,11 +9822,12 @@ void MainWindow::on_toolButtonPrevLut_clicked()
     {
         // Move the iterator to the current lut file
         QString fileName = firstFileName;
-        while (fileName != ui->lineEditLutName->text())
+        while (fileName < ui->lineEditLutName->text())
         {
             // Save the previous file name in a variable
             previousFileName = fileName;
-            fileName = lutFileIt.next();
+            if (lutFileIt.hasNext()) fileName = lutFileIt.next();
+            else break;
         }
     }
 
@@ -10362,6 +10478,18 @@ void MainWindow::listViewSessionUpdate()
     ui->listViewSession->setVisible( true );
 }
 
+//Check if disk nearly full
+void MainWindow::checkDiskFull(QString path)
+{
+    QStorageInfo disk = QStorageInfo( QFileInfo( path ).path() );
+    //qDebug() << QFileInfo( path ).path() << "availableSize:" << disk.bytesAvailable()/1024/1024 << "MB";
+    if( 20 > disk.bytesAvailable()/1024/1024 )
+    {
+        QMessageBox::warning( this, APPNAME, tr( "Disk full. Export aborted." ) );
+        m_exportAbortPressed = true;
+    }
+}
+
 //Changed the transfer function text
 void MainWindow::on_lineEditTransferFunction_textChanged(const QString &arg1)
 {
@@ -10373,4 +10501,15 @@ void MainWindow::on_lineEditTransferFunction_textChanged(const QString &arg1)
     processingSetTransferFunction( m_pProcessingObject, arg1.toLatin1().data() );
 #endif
     m_frameChanged = true;
+}
+
+//Change viewer background color
+void MainWindow::on_actionViewerBackgroundColor_triggered()
+{
+    QColorDialog *dialog = new QColorDialog( ui->graphicsView->backgroundBrush().color() );
+    if( dialog->exec() )
+    {
+        ui->graphicsView->setBackgroundBrush( QBrush( dialog->selectedColor(), Qt::SolidPattern ) );
+    }
+    delete dialog;
 }
